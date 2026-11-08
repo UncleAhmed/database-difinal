@@ -930,3 +930,32 @@
         padding: 16px;
     }
 }
+
+
+/* CLEAR FORM BUTTON */
+.monitoring-clear-button {
+    background-color: #6c757d;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.monitoring-clear-button:hover {
+    background-color: #5a6268;
+}
+
+/* DELETE RECORD BUTTON */
+.monitoring-delete-button {
+    background-color: #dc3545;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.monitoring-delete-button:hover {
+    background-color: #b02a37;
+}
