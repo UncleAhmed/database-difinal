@@ -2,34 +2,140 @@
 <?php
 
 require_once "includes/auth.php";
-require_once "config/database.php";
 
-// Only administrators can create collection schedules
-requireAdmin();
+// Only administrators can access this page.
+if (($_SESSION["role"] ?? "") !== "Admin") {
+    http_response_code(403);
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Access Denied | Solid Waste Management System</title>
+        <style>
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                margin: 0;
+                font-family: Arial, sans-serif;
+                background: #f4f6f9;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+
+            .access-container {
+                background: white;
+                width: 100%;
+                max-width: 500px;
+                padding: 40px 30px;
+                border-radius: 12px;
+                text-align: center;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            }
+
+            .warning-icon {
+                font-size: 55px;
+                margin-bottom: 15px;
+            }
+
+            h1 {
+                color: #dc3545;
+                margin-bottom: 15px;
+            }
+
+            p {
+                color: #555;
+                line-height: 1.6;
+                margin-bottom: 25px;
+            }
+
+            .return-button {
+                display: inline-block;
+                padding: 12px 25px;
+                background: #198754;
+                color: white;
+                text-decoration: none;
+                border-radius: 6px;
+                font-weight: bold;
+                transition: background 0.2s;
+            }
+
+            .return-button:hover {
+                background: #146c43;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="access-container">
+            <div class="warning-icon">⚠️</div>
+            <h1>bawal ka dereh</h1>
+
+            <p>
+                gina dili para sa mga sama nimo ang pag anhi diri
+                <br><br>
+                This section is restricted to administrators only.
+                Please return to your dashboard.
+            </p>
+
+            <a href="dashboard.php" class="return-button">
+                balik sa gi gikanan
+            </a>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+require_once "config/database.php";
 
 $error = "";
 $success = "";
 
-// Create a CSRF token for form security
+// Create CSRF token.
 if (empty($_SESSION["csrf_token"])) {
     $_SESSION["csrf_token"] = bin2hex(random_bytes(32));
 }
 
-// Load routes
+// Load routes.
 $routes = $pdo->query(
     "SELECT route_id, route_name
      FROM routes
      ORDER BY route_name"
 )->fetchAll();
 
-// Load vehicles
+// Load all route-zone assignments.
+$routeZones = [];
+
+$zoneQuery = $pdo->query(
+    "SELECT
+        rz.route_id,
+        z.zone_id,
+        z.zone_name
+     FROM route_zones rz
+     INNER JOIN zones z
+        ON rz.zone_id = z.zone_id
+     ORDER BY rz.route_id, z.zone_id"
+);
+
+foreach ($zoneQuery->fetchAll() as $zone) {
+    $routeZones[$zone["route_id"]][] = $zone["zone_name"];
+}
+
+// Load vehicles.
 $vehicles = $pdo->query(
     "SELECT vehicle_id, capacity_tons
      FROM vehicles
      ORDER BY vehicle_id"
 )->fetchAll();
 
-// Load drivers
+// Load drivers.
 $drivers = $pdo->query(
     "SELECT personnel_id, full_name
      FROM personnel
@@ -37,8 +143,7 @@ $drivers = $pdo->query(
      ORDER BY full_name"
 )->fetchAll();
 
-// Load crew members
-// Use personnel_id when full_name is NULL or empty
+// Load crew members.
 $crewMembers = $pdo->query(
     "SELECT
         personnel_id,
@@ -48,10 +153,12 @@ $crewMembers = $pdo->query(
      ORDER BY personnel_id"
 )->fetchAll();
 
-// Process the scheduling form
+
+// PROCESS SCHEDULING FORM
+
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-    // Verify CSRF token
+    // Verify CSRF token.
     if (
         !isset($_POST["csrf_token"]) ||
         !hash_equals($_SESSION["csrf_token"], $_POST["csrf_token"])
@@ -66,7 +173,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $driverId = $_POST["driver_id"] ?? "";
         $selectedCrew = $_POST["crew_ids"] ?? [];
 
-        // Basic validation
+        // Basic validation.
         if (
             $runId === "" ||
             $scheduledDate === "" ||
@@ -79,7 +186,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             $error = "Please complete all required fields and select at least one crew member.";
         } else {
 
-            // Validate date
+            // Validate date.
             $date = DateTime::createFromFormat("!Y-m-d", $scheduledDate);
 
             if (
@@ -91,7 +198,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                 try {
 
-                    // Check duplicate Run ID
+                    // Check duplicate Run ID.
                     $check = $pdo->prepare(
                         "SELECT run_id
                          FROM collection_runs
@@ -106,16 +213,22 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                     } else {
 
-                        // Verify route
+                        // Verify route and count its assigned zones.
                         $checkRoute = $pdo->prepare(
-                            "SELECT route_id
-                             FROM routes
-                             WHERE route_id = ?"
+                            "SELECT
+                                r.route_id,
+                                COUNT(rz.zone_id) AS zone_count
+                             FROM routes r
+                             LEFT JOIN route_zones rz
+                                ON r.route_id = rz.route_id
+                             WHERE r.route_id = ?
+                             GROUP BY r.route_id"
                         );
 
                         $checkRoute->execute([$routeId]);
+                        $routeRecord = $checkRoute->fetch();
 
-                        // Verify vehicle
+                        // Verify vehicle.
                         $checkVehicle = $pdo->prepare(
                             "SELECT vehicle_id
                              FROM vehicles
@@ -124,7 +237,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                         $checkVehicle->execute([$vehicleId]);
 
-                        // Verify driver
+                        // Verify driver.
                         $checkDriver = $pdo->prepare(
                             "SELECT personnel_id
                              FROM personnel
@@ -135,7 +248,13 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                         $checkDriver->execute([$driverId]);
 
                         if (
-                            !$checkRoute->fetch() ||
+                            !$routeRecord ||
+                            (int)$routeRecord["zone_count"] === 0
+                        ) {
+
+                            $error = "The selected route has no assigned zones. Please assign at least one zone to this route first.";
+
+                        } elseif (
                             !$checkVehicle->fetch() ||
                             !$checkDriver->fetch()
                         ) {
@@ -144,10 +263,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                         } else {
 
-                            // Remove duplicate crew IDs
+                            // Remove duplicate crew IDs.
                             $selectedCrew = array_unique($selectedCrew);
 
-                            // Verify crew members
+                            // Verify crew members.
                             $checkCrew = $pdo->prepare(
                                 "SELECT personnel_id
                                  FROM personnel
@@ -168,7 +287,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                                 $validCrew[] = $crewId;
                             }
 
-                            // Save schedule and crew members together
+                            // Save schedule and crew members together.
                             $pdo->beginTransaction();
 
                             $insertRun = $pdo->prepare(
@@ -194,7 +313,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                                 $driverId
                             ]);
 
-                            // Insert assigned crew members
+                            // Insert assigned crew members.
                             $insertCrew = $pdo->prepare(
                                 "INSERT INTO run_crew (run_id, personnel_id)
                                  VALUES (?, ?)"
@@ -208,7 +327,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                             $success = "Collection schedule created successfully!";
 
-                            // Generate a fresh CSRF token
+                            // Generate a fresh CSRF token.
                             $_SESSION["csrf_token"] = bin2hex(random_bytes(32));
                         }
                     }
@@ -226,7 +345,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     }
 }
 
-// Load existing collection schedules with assigned crew members
+
+// LOAD EXISTING COLLECTION SCHEDULES
+
 $schedules = $pdo->query(
     "SELECT
         cr.run_id,
@@ -236,10 +357,16 @@ $schedules = $pdo->query(
         p.full_name AS driver_name,
 
         GROUP_CONCAT(
-            COALESCE(NULLIF(crew.full_name, ''), crew.personnel_id)
+            DISTINCT COALESCE(NULLIF(crew.full_name, ''), crew.personnel_id)
             ORDER BY crew.personnel_id
             SEPARATOR ', '
         ) AS crew_members,
+
+        GROUP_CONCAT(
+            DISTINCT z.zone_name
+            ORDER BY z.zone_id
+            SEPARATOR ', '
+        ) AS zones_covered,
 
         cr.run_status
 
@@ -260,9 +387,16 @@ $schedules = $pdo->query(
      LEFT JOIN personnel crew
         ON rc.personnel_id = crew.personnel_id
 
+     LEFT JOIN route_zones rz
+        ON cr.route_id = rz.route_id
+
+     LEFT JOIN zones z
+        ON rz.zone_id = z.zone_id
+
      GROUP BY
         cr.run_id,
         cr.scheduled_date,
+        cr.route_id,
         r.route_name,
         cr.vehicle_id,
         p.full_name,
@@ -270,6 +404,13 @@ $schedules = $pdo->query(
 
      ORDER BY cr.scheduled_date DESC"
 )->fetchAll();
+
+
+// Convert route-zone assignments into JavaScript data.
+$routeZonesJson = json_encode(
+    $routeZones,
+    JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT
+);
 
 ?>
 
@@ -283,6 +424,37 @@ $schedules = $pdo->query(
     <title>Collection Scheduling | Solid Waste Management System</title>
 
     <link rel="stylesheet" href="assets/style.css">
+
+    <style>
+        .zones-preview {
+            margin-top: 10px;
+            padding: 14px;
+            background: #f1f6fc;
+            border: 1px solid #d6e3f1;
+            border-radius: 8px;
+        }
+
+        .zones-preview strong {
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        .zone-tag {
+            display: inline-block;
+            padding: 6px 12px;
+            margin: 3px;
+            background: #dceafe;
+            color: #174a85;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .zone-message {
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
 </head>
 
 <body class="dashboard-page">
@@ -305,6 +477,7 @@ $schedules = $pdo->query(
 
         </aside>
 
+
         <!-- MAIN CONTENT -->
         <main class="dashboard-content">
 
@@ -320,6 +493,7 @@ $schedules = $pdo->query(
                 </span>
 
             </header>
+
 
             <!-- SCHEDULING FORM -->
             <section class="schedule-form-section">
@@ -337,6 +511,7 @@ $schedules = $pdo->query(
                         <?php echo htmlspecialchars($success); ?>
                     </div>
                 <?php endif; ?>
+
 
                 <form method="POST" action="schedules.php">
 
@@ -363,6 +538,7 @@ $schedules = $pdo->query(
 
                         </div>
 
+
                         <!-- SCHEDULED DATE -->
                         <div class="form-group">
 
@@ -377,6 +553,7 @@ $schedules = $pdo->query(
 
                         </div>
 
+
                         <!-- ROUTE -->
                         <div class="form-group">
 
@@ -389,14 +566,28 @@ $schedules = $pdo->query(
                                 <?php foreach ($routes as $route): ?>
 
                                     <option value="<?php echo htmlspecialchars($route["route_id"]); ?>">
-                                        <?php echo htmlspecialchars($route["route_name"]); ?>
+                                        <?php echo htmlspecialchars($route["route_id"] . " - " . $route["route_name"]); ?>
                                     </option>
 
                                 <?php endforeach; ?>
 
                             </select>
 
+                            <!-- AUTOMATIC ZONE DISPLAY -->
+                            <div class="zones-preview" id="zones-preview" aria-live="polite">
+
+                                <strong>Zones Covered</strong>
+
+                                <div id="zones-list">
+                                    <span class="zone-message">
+                                        Select a collection route to view its assigned zones.
+                                    </span>
+                                </div>
+
+                            </div>
+
                         </div>
+
 
                         <!-- VEHICLE -->
                         <div class="form-group">
@@ -420,6 +611,7 @@ $schedules = $pdo->query(
 
                         </div>
 
+
                         <!-- DRIVER -->
                         <div class="form-group">
 
@@ -442,6 +634,7 @@ $schedules = $pdo->query(
                         </div>
 
                     </div>
+
 
                     <!-- CREW MEMBERS -->
                     <div class="form-group crew-selection">
@@ -470,6 +663,7 @@ $schedules = $pdo->query(
 
                     </div>
 
+
                     <button type="submit" class="schedule-button">
                         Create Collection Schedule
                     </button>
@@ -477,6 +671,7 @@ $schedules = $pdo->query(
                 </form>
 
             </section>
+
 
             <!-- EXISTING SCHEDULES -->
             <section class="recent-runs schedule-list">
@@ -493,6 +688,7 @@ $schedules = $pdo->query(
                                 <th>Run ID</th>
                                 <th>Date</th>
                                 <th>Route</th>
+                                <th>Zones Covered</th>
                                 <th>Vehicle</th>
                                 <th>Driver</th>
                                 <th>Crew Members</th>
@@ -500,6 +696,7 @@ $schedules = $pdo->query(
                             </tr>
 
                         </thead>
+
 
                         <tbody>
 
@@ -519,6 +716,10 @@ $schedules = $pdo->query(
 
                                         <td>
                                             <?php echo htmlspecialchars($schedule["route_name"]); ?>
+                                        </td>
+
+                                        <td>
+                                            <?php echo htmlspecialchars($schedule["zones_covered"] ?? "No zones assigned"); ?>
                                         </td>
 
                                         <td>
@@ -546,7 +747,7 @@ $schedules = $pdo->query(
                             <?php else: ?>
 
                                 <tr>
-                                    <td colspan="7">No collection schedules found.</td>
+                                    <td colspan="8">No collection schedules found.</td>
                                 </tr>
 
                             <?php endif; ?>
@@ -563,6 +764,64 @@ $schedules = $pdo->query(
 
     </div>
 
-</body>
 
+    <!-- AUTOMATIC ZONE DISPLAY -->
+    <script>
+
+        const routeZones = <?php echo $routeZonesJson ?: "{}"; ?>;
+
+        const routeSelect = document.getElementById("route_id");
+        const zonesList = document.getElementById("zones-list");
+
+        function displayZones() {
+
+            const selectedRoute = routeSelect.value;
+
+            // Clear previous zone display.
+            zonesList.innerHTML = "";
+
+            if (selectedRoute === "") {
+
+                zonesList.textContent =
+                    "Select a collection route to view its assigned zones.";
+
+                zonesList.className = "zone-message";
+
+                return;
+            }
+
+            const zones = routeZones[selectedRoute] || [];
+
+            if (zones.length === 0) {
+
+                zonesList.textContent =
+                    "No zones are assigned to this route.";
+
+                zonesList.className = "zone-message";
+
+                return;
+            }
+
+            zonesList.className = "";
+
+            zones.forEach(function(zoneName) {
+
+                const zoneTag = document.createElement("span");
+
+                zoneTag.className = "zone-tag";
+
+                zoneTag.textContent = zoneName;
+
+                zonesList.appendChild(zoneTag);
+
+            });
+
+        }
+
+        // Display zones whenever the route changes.
+        routeSelect.addEventListener("change", displayZones);
+
+    </script>
+
+</body>
 </html>

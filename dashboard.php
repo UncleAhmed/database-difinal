@@ -27,17 +27,46 @@ $totalWeight = $pdo->query(
      FROM collection_runs"
 )->fetchColumn();
 
-// Get the five most recent collection runs
+// Get the five most recent collection runs, including zones covered
 $sql = "SELECT
             cr.run_id,
             cr.scheduled_date,
             r.route_name,
             v.vehicle_id,
+
+            GROUP_CONCAT(
+                DISTINCT z.zone_name
+                ORDER BY z.zone_id
+                SEPARATOR ', '
+            ) AS zones_covered,
+
             cr.collected_weight_tons,
             cr.run_status
+
         FROM collection_runs cr
-        JOIN routes r ON cr.route_id = r.route_id
-        JOIN vehicles v ON cr.vehicle_id = v.vehicle_id
+
+        JOIN routes r
+            ON cr.route_id = r.route_id
+
+        JOIN vehicles v
+            ON cr.vehicle_id = v.vehicle_id
+
+        LEFT JOIN route_zones rz
+            ON cr.route_id = rz.route_id
+
+        LEFT JOIN zones z
+            ON rz.zone_id = z.zone_id
+
+        GROUP BY
+            cr.run_id,
+            cr.scheduled_date,
+            r.route_name,
+            cr.route_id,
+            cr.vehicle_id,
+            v.vehicle_id,
+            cr.collected_weight_tons,
+            cr.run_status
+
         ORDER BY cr.scheduled_date DESC, cr.run_id DESC
         LIMIT 5";
 
@@ -132,12 +161,13 @@ $recentRuns = $stmt->fetchAll();
 
                         <thead>
                             <tr>
-                                <th>Run ID</th>
-                                <th>Date</th>
-                                <th>Route</th>
-                                <th>Vehicle</th>
-                                <th>Weight (tons)</th>
-                                <th>Status</th>
+                               <th>Run ID</th>
+<th>Date</th>
+<th>Route</th>
+<th>Zones Covered</th>
+<th>Vehicle</th>
+<th>Weight (tons)</th>
+<th>Status</th>
                             </tr>
                         </thead>
 
@@ -152,10 +182,17 @@ $recentRuns = $stmt->fetchAll();
 
                                         <td><?php echo htmlspecialchars($run["scheduled_date"]); ?></td>
 
-                                        <td><?php echo htmlspecialchars($run["route_name"]); ?></td>
+                                        <td>
+    <?php echo htmlspecialchars($run["route_name"]); ?>
+</td>
 
-                                        <td><?php echo htmlspecialchars($run["vehicle_id"]); ?></td>
+<td>
+    <?php echo htmlspecialchars($run["zones_covered"] ?? "No zones assigned"); ?>
+</td>
 
+<td>
+    <?php echo htmlspecialchars($run["vehicle_id"]); ?>
+</td>
                                         <td>
                                             <?php
                                             echo $run["collected_weight_tons"] !== null
@@ -176,7 +213,7 @@ $recentRuns = $stmt->fetchAll();
                             <?php else: ?>
 
                                 <tr>
-                                    <td colspan="6">No collection runs found.</td>
+                                    <td colspan="7">No collection runs found.</td>
                                 </tr>
 
                             <?php endif; ?>
