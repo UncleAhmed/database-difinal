@@ -3,7 +3,7 @@
 
 require_once "includes/auth.php";
 
-// Only administrators can access this page.
+// Only admin can access.
 if (($_SESSION["role"] ?? "") !== "Admin") {
     http_response_code(403);
     ?>
@@ -103,12 +103,87 @@ if (empty($_SESSION["csrf_token"])) {
     $_SESSION["csrf_token"] = bin2hex(random_bytes(32));
 }
 
+
+// =====================================================
+// RESOURCE AVAILABILITY CHECK ENDPOINT
+// =====================================================
+
+if (
+    isset($_GET["action"]) &&
+    $_GET["action"] === "availability"
+) {
+    header("Content-Type: application/json");
+
+    $date = $_GET["date"] ?? "";
+
+    $dateObject = DateTime::createFromFormat("!Y-m-d", $date);
+
+    if (
+        !$dateObject ||
+        $dateObject->format("Y-m-d") !== $date
+    ) {
+        http_response_code(400);
+
+        echo json_encode([
+            "error" => "Invalid date."
+        ]);
+
+        exit;
+    }
+
+    // Find vehicles assigned to active runs on the selected date.
+    $vehicleQuery = $pdo->prepare(
+        "SELECT DISTINCT vehicle_id
+         FROM collection_runs
+         WHERE scheduled_date = ?
+         AND run_status IN ('Scheduled', 'Ongoing')"
+    );
+
+    $vehicleQuery->execute([$date]);
+
+    // Find drivers assigned to active runs on the selected date.
+    $driverQuery = $pdo->prepare(
+        "SELECT DISTINCT driver_id
+         FROM collection_runs
+         WHERE scheduled_date = ?
+         AND run_status IN ('Scheduled', 'Ongoing')"
+    );
+
+    $driverQuery->execute([$date]);
+
+    // Find crew members assigned to active runs on the selected date.
+    $crewQuery = $pdo->prepare(
+        "SELECT DISTINCT rc.personnel_id
+         FROM run_crew rc
+         INNER JOIN collection_runs cr
+             ON rc.run_id = cr.run_id
+         WHERE cr.scheduled_date = ?
+         AND cr.run_status IN ('Scheduled', 'Ongoing')"
+    );
+
+    $crewQuery->execute([$date]);
+
+    echo json_encode([
+        "vehicles" => $vehicleQuery->fetchAll(PDO::FETCH_COLUMN),
+        "drivers" => $driverQuery->fetchAll(PDO::FETCH_COLUMN),
+        "crew" => $crewQuery->fetchAll(PDO::FETCH_COLUMN)
+    ]);
+
+    exit;
+}
+
+
+// =====================================================
+// LOAD FORM DATA
+// =====================================================
+
 // Load routes.
 $routes = $pdo->query(
     "SELECT route_id, route_name
      FROM routes
      ORDER BY route_name"
 )->fetchAll();
+
 
 // Load all route-zone assignments.
 $routeZones = [];
@@ -120,13 +195,14 @@ $zoneQuery = $pdo->query(
         z.zone_name
      FROM route_zones rz
      INNER JOIN zones z
-        ON rz.zone_id = z.zone_id
+         ON rz.zone_id = z.zone_id
      ORDER BY rz.route_id, z.zone_id"
 );
 
 foreach ($zoneQuery->fetchAll() as $zone) {
     $routeZones[$zone["route_id"]][] = $zone["zone_name"];
 }
+
 
 // Load vehicles.
 $vehicles = $pdo->query(
@@ -135,6 +211,7 @@ $vehicles = $pdo->query(
      ORDER BY vehicle_id"
 )->fetchAll();
 
+
 // Load drivers.
 $drivers = $pdo->query(
     "SELECT personnel_id, full_name
@@ -142,6 +219,7 @@ $drivers = $pdo->query(
      WHERE personnel_role = 'Driver'
      ORDER BY full_name"
 )->fetchAll();
+
 
 // Load crew members.
 $crewMembers = $pdo->query(
@@ -154,7 +232,9 @@ $crewMembers = $pdo->query(
 )->fetchAll();
 
 
+// =====================================================
 // PROCESS SCHEDULING FORM
+// =====================================================
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
@@ -164,6 +244,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         !hash_equals($_SESSION["csrf_token"], $_POST["csrf_token"])
     ) {
         $error = "Invalid form submission. Please refresh the page.";
+
     } else {
 
         $runId = trim($_POST["run_id"] ?? "");
@@ -172,6 +253,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $vehicleId = $_POST["vehicle_id"] ?? "";
         $driverId = $_POST["driver_id"] ?? "";
         $selectedCrew = $_POST["crew_ids"] ?? [];
+
 
         // Basic validation.
         if (
@@ -184,6 +266,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             count($selectedCrew) === 0
         ) {
             $error = "Please complete all required fields and select at least one crew member.";
+
         } else {
 
             // Validate date.
@@ -194,6 +277,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 $date->format("Y-m-d") !== $scheduledDate
             ) {
                 $error = "Please enter a valid collection date.";
+
             } else {
 
                 try {
@@ -220,13 +304,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                                 COUNT(rz.zone_id) AS zone_count
                              FROM routes r
                              LEFT JOIN route_zones rz
-                                ON r.route_id = rz.route_id
+                                 ON r.route_id = rz.route_id
                              WHERE r.route_id = ?
                              GROUP BY r.route_id"
                         );
 
                         $checkRoute->execute([$routeId]);
+
                         $routeRecord = $checkRoute->fetch();
+
 
                         // Verify vehicle.
                         $checkVehicle = $pdo->prepare(
@@ -237,6 +323,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                         $checkVehicle->execute([$vehicleId]);
 
+
                         // Verify driver.
                         $checkDriver = $pdo->prepare(
                             "SELECT personnel_id
@@ -246,6 +333,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                         );
 
                         $checkDriver->execute([$driverId]);
+
 
                         if (
                             !$routeRecord ||
@@ -266,6 +354,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                             // Remove duplicate crew IDs.
                             $selectedCrew = array_unique($selectedCrew);
 
+
                             // Verify crew members.
                             $checkCrew = $pdo->prepare(
                                 "SELECT personnel_id
@@ -278,6 +367,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                             foreach ($selectedCrew as $crewId) {
 
+                                if (!is_string($crewId) && !is_int($crewId)) {
+                                    throw new Exception("Invalid crew member selected.");
+                                }
+
                                 $checkCrew->execute([$crewId]);
 
                                 if (!$checkCrew->fetch()) {
@@ -287,7 +380,100 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                                 $validCrew[] = $crewId;
                             }
 
-                            // Save schedule and crew members together.
+
+                            // =====================================================
+                            // CHECK VEHICLE AVAILABILITY
+                            // =====================================================
+
+                            $checkVehicleAvailability = $pdo->prepare(
+                                "SELECT run_id
+                                 FROM collection_runs
+                                 WHERE vehicle_id = ?
+                                 AND scheduled_date = ?
+                                 AND run_status IN ('Scheduled', 'Ongoing')
+                                 LIMIT 1"
+                            );
+
+                            $checkVehicleAvailability->execute([
+                                $vehicleId,
+                                $scheduledDate
+                            ]);
+
+                            if ($checkVehicleAvailability->fetch()) {
+
+                                throw new Exception(
+                                    "The selected vehicle is already assigned to another active collection run on this date."
+                                );
+                            }
+
+
+                            // =====================================================
+                            // CHECK DRIVER AVAILABILITY
+                            // =====================================================
+
+                            $checkDriverAvailability = $pdo->prepare(
+                                "SELECT run_id
+                                 FROM collection_runs
+                                 WHERE driver_id = ?
+                                 AND scheduled_date = ?
+                                 AND run_status IN ('Scheduled', 'Ongoing')
+                                 LIMIT 1"
+                            );
+
+                            $checkDriverAvailability->execute([
+                                $driverId,
+                                $scheduledDate
+                            ]);
+
+                            if ($checkDriverAvailability->fetch()) {
+
+                                throw new Exception(
+                                    "The selected driver is already assigned to another active collection run on this date."
+                                );
+                            }
+
+
+                            // =====================================================
+                            // CHECK CREW AVAILABILITY
+                            // =====================================================
+
+                            $checkCrewAvailability = $pdo->prepare(
+                                "SELECT rc.personnel_id
+                                 FROM run_crew rc
+                                 INNER JOIN collection_runs cr
+                                     ON rc.run_id = cr.run_id
+                                 WHERE rc.personnel_id = ?
+                                 AND cr.scheduled_date = ?
+                                 AND cr.run_status IN ('Scheduled', 'Ongoing')
+                                 LIMIT 1"
+                            );
+
+                            $unavailableCrew = [];
+
+                            foreach ($validCrew as $crewId) {
+
+                                $checkCrewAvailability->execute([
+                                    $crewId,
+                                    $scheduledDate
+                                ]);
+
+                                if ($checkCrewAvailability->fetch()) {
+                                    $unavailableCrew[] = $crewId;
+                                }
+                            }
+
+                            if (count($unavailableCrew) > 0) {
+
+                                throw new Exception(
+                                    "One or more selected crew members are already assigned to another active collection run on this date."
+                                );
+                            }
+
+
+                            // =====================================================
+                            // SAVE SCHEDULE AND CREW MEMBERS
+                            // =====================================================
+
                             $pdo->beginTransaction();
 
                             $insertRun = $pdo->prepare(
@@ -313,6 +499,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                                 $driverId
                             ]);
 
+
                             // Insert assigned crew members.
                             $insertCrew = $pdo->prepare(
                                 "INSERT INTO run_crew (run_id, personnel_id)
@@ -323,6 +510,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                                 $insertCrew->execute([$runId, $crewId]);
                             }
 
+
                             $pdo->commit();
 
                             $success = "Collection schedule created successfully!";
@@ -332,13 +520,21 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                         }
                     }
 
-                } catch (Exception $e) {
+                } catch (PDOException $e) {
 
                     if ($pdo->inTransaction()) {
                         $pdo->rollBack();
                     }
 
                     $error = "Unable to create the schedule. Please check your entries and try again.";
+
+                } catch (Exception $e) {
+
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+
+                    $error = $e->getMessage();
                 }
             }
         }
@@ -346,7 +542,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 }
 
 
+// =====================================================
 // LOAD EXISTING COLLECTION SCHEDULES
+// =====================================================
 
 $schedules = $pdo->query(
     "SELECT
@@ -373,25 +571,25 @@ $schedules = $pdo->query(
      FROM collection_runs cr
 
      JOIN routes r
-        ON cr.route_id = r.route_id
+         ON cr.route_id = r.route_id
 
      JOIN vehicles v
-        ON cr.vehicle_id = v.vehicle_id
+         ON cr.vehicle_id = v.vehicle_id
 
      JOIN personnel p
-        ON cr.driver_id = p.personnel_id
+         ON cr.driver_id = p.personnel_id
 
      LEFT JOIN run_crew rc
-        ON cr.run_id = rc.run_id
+         ON cr.run_id = rc.run_id
 
      LEFT JOIN personnel crew
-        ON rc.personnel_id = crew.personnel_id
+         ON rc.personnel_id = crew.personnel_id
 
      LEFT JOIN route_zones rz
-        ON cr.route_id = rz.route_id
+         ON cr.route_id = rz.route_id
 
      LEFT JOIN zones z
-        ON rz.zone_id = z.zone_id
+         ON rz.zone_id = z.zone_id
 
      GROUP BY
         cr.run_id,
@@ -454,8 +652,20 @@ $routeZonesJson = json_encode(
             color: #666;
             font-size: 14px;
         }
+
+        select option:disabled {
+            color: #999;
+        }
+
+        .availability-note {
+            display: block;
+            margin-top: 6px;
+            color: #777;
+            font-size: 12px;
+        }
     </style>
 </head>
+
 
 <body class="dashboard-page">
 
@@ -523,6 +733,7 @@ $routeZonesJson = json_encode(
 
                     <div class="schedule-form-grid">
 
+
                         <!-- RUN ID -->
                         <div class="form-group">
 
@@ -551,6 +762,10 @@ $routeZonesJson = json_encode(
                                 required
                             >
 
+                            <small class="availability-note">
+                                Resource availability will be checked automatically for this date.
+                            </small>
+
                         </div>
 
 
@@ -573,8 +788,9 @@ $routeZonesJson = json_encode(
 
                             </select>
 
+
                             <!-- AUTOMATIC ZONE DISPLAY -->
-                            <div class="zones-preview" id="zones-preview" aria-live="polite">
+                            <div class="zones-preview" id="zones-preview">
 
                                 <strong>Zones Covered</strong>
 
@@ -632,6 +848,7 @@ $routeZonesJson = json_encode(
                             </select>
 
                         </div>
+
 
                     </div>
 
@@ -760,13 +977,18 @@ $routeZonesJson = json_encode(
 
             </section>
 
+
         </main>
 
     </div>
 
 
-    <!-- AUTOMATIC ZONE DISPLAY -->
+    <!-- RESOURCE AVAILABILITY AND ZONE DISPLAY -->
     <script>
+
+        // ==========================================
+        // ROUTE AND ZONE DISPLAY
+        // ==========================================
 
         const routeZones = <?php echo $routeZonesJson ?: "{}"; ?>;
 
@@ -777,7 +999,6 @@ $routeZonesJson = json_encode(
 
             const selectedRoute = routeSelect.value;
 
-            // Clear previous zone display.
             zonesList.innerHTML = "";
 
             if (selectedRoute === "") {
@@ -818,8 +1039,182 @@ $routeZonesJson = json_encode(
 
         }
 
-        // Display zones whenever the route changes.
         routeSelect.addEventListener("change", displayZones);
+
+
+        // ==========================================
+        // RESOURCE AVAILABILITY
+        // ==========================================
+
+        document.addEventListener("DOMContentLoaded", function() {
+
+            const dateInput = document.getElementById("scheduled_date");
+            const vehicleSelect = document.getElementById("vehicle_id");
+            const driverSelect = document.getElementById("driver_id");
+
+            const crewCheckboxes = document.querySelectorAll(
+                'input[name="crew_ids[]"]'
+            );
+
+
+            // Restore all resources when no date is selected.
+            function resetResources() {
+
+                Array.from(vehicleSelect.options).forEach(function(option) {
+
+                    option.disabled = false;
+
+                    if (option.dataset.originalText) {
+                        option.textContent = option.dataset.originalText;
+                    }
+
+                });
+
+
+                Array.from(driverSelect.options).forEach(function(option) {
+
+                    option.disabled = false;
+
+                    if (option.dataset.originalText) {
+                        option.textContent = option.dataset.originalText;
+                    }
+
+                });
+
+
+                crewCheckboxes.forEach(function(checkbox) {
+
+                    checkbox.disabled = false;
+
+                    const label = checkbox.closest("label");
+
+                    if (label) {
+                        label.style.opacity = "1";
+                        label.title = "";
+                    }
+
+                });
+
+            }
+
+
+            // Check availability for the selected date.
+            async function updateResourceAvailability() {
+
+                const selectedDate = dateInput.value;
+
+                if (!selectedDate) {
+                    resetResources();
+                    return;
+                }
+
+                try {
+
+                    const response = await fetch(
+                        "schedules.php?action=availability&date=" +
+                        encodeURIComponent(selectedDate)
+                    );
+
+                    if (!response.ok) {
+                        throw new Error("Unable to check resource availability.");
+                    }
+
+                    const availability = await response.json();
+
+
+                    // Update vehicle options.
+                    Array.from(vehicleSelect.options).forEach(function(option) {
+
+                        if (option.value === "") return;
+
+                        if (!option.dataset.originalText) {
+                            option.dataset.originalText = option.textContent;
+                        }
+
+                        const unavailable =
+                            availability.vehicles.includes(option.value);
+
+                        option.disabled = unavailable;
+
+                        option.textContent =
+                            option.dataset.originalText +
+                            (unavailable ? " (Unavailable)" : "");
+
+                    });
+
+
+                    // Update driver options.
+                    Array.from(driverSelect.options).forEach(function(option) {
+
+                        if (option.value === "") return;
+
+                        if (!option.dataset.originalText) {
+                            option.dataset.originalText = option.textContent;
+                        }
+
+                        const unavailable =
+                            availability.drivers.includes(option.value);
+
+                        option.disabled = unavailable;
+
+                        option.textContent =
+                            option.dataset.originalText +
+                            (unavailable ? " (Unavailable)" : "");
+
+                    });
+
+
+                    // Update crew checkboxes.
+                    crewCheckboxes.forEach(function(checkbox) {
+
+                        const unavailable =
+                            availability.crew.includes(checkbox.value);
+
+                        checkbox.disabled = unavailable;
+
+                        const label = checkbox.closest("label");
+
+                        if (label) {
+
+                            label.style.opacity =
+                                unavailable ? "0.45" : "1";
+
+                            label.title = unavailable
+                                ? "Already assigned to an active run on this date."
+                                : "";
+
+                        }
+
+                        // Automatically uncheck unavailable crew members.
+                        if (unavailable) {
+                            checkbox.checked = false;
+                        }
+
+                    });
+
+                } catch (error) {
+
+                    console.error(error);
+
+                    alert(
+                        "Unable to check resource availability. Please refresh the page before creating a schedule."
+                    );
+
+                }
+
+            }
+
+
+            // Check whenever the date changes.
+            dateInput.addEventListener(
+                "change",
+                updateResourceAvailability
+            );
+
+            // Also check when the page initially loads.
+            updateResourceAvailability();
+
+        });
 
     </script>
 

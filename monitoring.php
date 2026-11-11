@@ -338,7 +338,7 @@ function e($value) {
 
             <a href="schedules.php">Collection Scheduling</a>
 
-            <a href="monitoring.php" class="active">Monitoring</a>
+            <a href="monitoring.php" class="active">Collection Monitoring</a>
 
             <?php if (($_SESSION["role"] ?? "") === "Admin"): ?>
                 <a href="users.php">User Management</a>
